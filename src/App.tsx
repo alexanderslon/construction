@@ -169,6 +169,7 @@ export default function App() {
   const [otkat, setOtkat] = useState<string>("5000");
   const draggingRowIdRef = useRef<number | null>(null);
   const printContentRef = useRef<HTMLDivElement | null>(null);
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     if (!isPreview) return;
@@ -254,7 +255,14 @@ export default function App() {
   }, [rows, prepayment, laborer, otkat]);
 
   const renderPrintDocument = () => (
-    <>
+    <div className="relative">
+      <img
+        src="/stamp.png"
+        alt=""
+        className="pointer-events-none select-none absolute -bottom-2 -right-2 w-[220px] opacity-20 rotate-[-12deg]"
+        loading="eager"
+        crossOrigin="anonymous"
+      />
       <div className="print-header mb-6">
         <div className="flex justify-between items-start mb-4">
           <div>
@@ -297,7 +305,7 @@ export default function App() {
           </div>
         </div>
       </div>
-    </>
+    </div>
   );
 
   const openPreview = () => {
@@ -317,12 +325,19 @@ export default function App() {
 
     const baseName = safeFilename(`smeta-${header.documentNumber || "doc"}-${header.date || ""}`) || "smeta";
     try {
+      setExporting(true);
+      // Wait for fonts/images to reduce blank exports
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const fonts = (document as any).fonts;
+      if (fonts?.ready) await fonts.ready;
+
       const blob = await toBlob(el, {
         quality: 0.95,
         backgroundColor: "#ffffff",
         pixelRatio: 2,
+        cacheBust: true,
       });
-      if (!blob) return;
+      if (!blob) throw new Error("Не удалось сформировать изображение");
 
       const file = new File([blob], `${baseName}.jpg`, { type: "image/jpeg" });
 
@@ -336,21 +351,30 @@ export default function App() {
         return;
       }
 
-      // Fallback: open image in a new tab (iOS Safari doesn't reliably support download attribute)
-      const url = URL.createObjectURL(blob);
-      const w = window.open(url, "_blank");
-      // If popup blocked, last resort: try download attribute anyway
-      if (!w) {
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `${baseName}.jpg`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
+      // iOS Safari: download attribute is unreliable — open image for "Save Image"
+      const ua = navigator.userAgent || "";
+      const isIOS = /iP(hone|ad|od)/.test(ua);
+      if (isIOS) {
+        const url = URL.createObjectURL(blob);
+        window.open(url, "_blank");
+        setTimeout(() => URL.revokeObjectURL(url), 30_000);
+        return;
       }
+
+      // Desktop/Android fallback: trigger real download
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${baseName}.jpg`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 30_000);
-    } catch {
-      // If rendering fails, do nothing (avoid breaking the page)
+    } catch (e) {
+      console.error("JPG export failed", e);
+      alert("Не получилось скачать JPG. Попробуй ещё раз или сделай «Печать / PDF» → «Сохранить как PDF».");
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -538,10 +562,11 @@ export default function App() {
           </button>
           <button
             onClick={() => void downloadJpg()}
-            className="inline-flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-700 transition active:scale-95"
+            className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg font-semibold transition active:scale-95 ${exporting ? "bg-blue-400 text-white cursor-not-allowed" : "bg-blue-600 text-white hover:bg-blue-700"}`}
             type="button"
+            disabled={exporting}
           >
-            Скачать JPG
+            {exporting ? "Готовим JPG..." : "Скачать JPG"}
           </button>
           <button
             onClick={() => window.close()}
