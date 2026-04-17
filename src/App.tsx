@@ -228,6 +228,8 @@ export default function App() {
 
     const filename = `smeta-${header.documentNumber || "doc"}-${header.date || ""}`.replace(/[^\w\-]+/g, "_");
 
+    const printHtml = root.innerHTML;
+
     printWindow.document.open();
     printWindow.document.write(`<!doctype html>
 <html lang="ru">
@@ -238,6 +240,9 @@ export default function App() {
     ${styles}
     <style>
       body { background: #f5f6f8; }
+      /* In preview we want to show the print layout */
+      .print-only { display: block !important; }
+      .no-print { display: none !important; }
       .preview-toolbar {
         position: sticky;
         top: 0;
@@ -291,7 +296,7 @@ export default function App() {
       <div class="preview-hint">В печати выбери «Сохранить как PDF», если нужен PDF</div>
     </div>
     <div class="preview-sheet">
-      ${root.outerHTML}
+      ${printHtml}
     </div>
     <script>
       function downloadHtml() {
