@@ -208,7 +208,52 @@ export default function App() {
     };
   }, [rows, prepayment, laborer, otkat]);
 
-  const handlePrint = () => window.print();
+  const handlePrint = () => {
+    const root = document.querySelector<HTMLElement>("[data-print-root]");
+    if (!root) {
+      window.print();
+      return;
+    }
+
+    const printWindow = window.open("", "_blank", "noopener,noreferrer");
+    if (!printWindow) {
+      // popup blocked – fall back to regular print
+      window.print();
+      return;
+    }
+
+    const styles = Array.from(document.querySelectorAll("style, link[rel='stylesheet']"))
+      .map((el) => el.outerHTML)
+      .join("\n");
+
+    printWindow.document.open();
+    printWindow.document.write(`<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Печать документа</title>
+    ${styles}
+  </head>
+  <body>
+    ${root.innerHTML}
+  </body>
+</html>`);
+    printWindow.document.close();
+
+    const trigger = () => {
+      printWindow.focus();
+      // give browser a beat to apply styles
+      setTimeout(() => {
+        printWindow.print();
+        printWindow.close();
+      }, 150);
+    };
+
+    // Some browsers need onload, some are fine immediately.
+    printWindow.onload = trigger;
+    setTimeout(trigger, 300);
+  };
 
   const headerField = (key: keyof HeaderData, label: string, placeholder: string) => (
     <div className="flex flex-col gap-1">
@@ -383,23 +428,47 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-100 to-blue-50">
-      {/* ===== PRINT HEADER ===== */}
-      <div className="print-only print-header mb-6">
-        <div className="flex justify-between items-start mb-4">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">СМЕТА НА СТРОИТЕЛЬНО-РЕМОНТНЫЕ РАБОТЫ</h1>
-            <p className="text-sm text-gray-600 mt-1">Документ № {header.documentNumber} от {header.date}</p>
+      <div data-print-root className="print-only">
+        {/* ===== PRINT HEADER ===== */}
+        <div className="print-header mb-6">
+          <div className="flex justify-between items-start mb-4">
+            <div>
+              <h1 className="text-2xl font-bold text-gray-900">СМЕТА НА СТРОИТЕЛЬНО-РЕМОНТНЫЕ РАБОТЫ</h1>
+              <p className="text-sm text-gray-600 mt-1">Документ № {header.documentNumber} от {header.date}</p>
+            </div>
+            <div className="text-right text-sm text-gray-700">
+              {header.city && <p>г. {header.city}</p>}
+              {header.address && <p>{header.address}</p>}
+            </div>
           </div>
-          <div className="text-right text-sm text-gray-700">
-            {header.city && <p>г. {header.city}</p>}
-            {header.address && <p>{header.address}</p>}
+          <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-sm text-gray-800 border-t border-gray-300 pt-3">
+            <div><span className="font-semibold">Заказчик:</span> {header.customerName || "—"}</div>
+            <div><span className="font-semibold">Телефон:</span> {header.customerPhone || "—"}</div>
+            <div><span className="font-semibold">Адрес объекта:</span> {header.address || "—"}</div>
+            <div><span className="font-semibold">Площадь:</span> {header.squareMeters || "—"} м²</div>
           </div>
         </div>
-        <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-sm text-gray-800 border-t border-gray-300 pt-3">
-          <div><span className="font-semibold">Заказчик:</span> {header.customerName || "—"}</div>
-          <div><span className="font-semibold">Телефон:</span> {header.customerPhone || "—"}</div>
-          <div><span className="font-semibold">Адрес объекта:</span> {header.address || "—"}</div>
-          <div><span className="font-semibold">Площадь:</span> {header.squareMeters || "—"} м²</div>
+
+        {renderTable(true)}
+
+        <div className="mt-6">
+          <div className="border-t-2 border-gray-400 pt-4 mt-4">
+            <div className="flex justify-end">
+              <div className="text-right">
+                <div className="text-sm text-gray-600">Итого по работам:</div>
+                <div className="text-2xl font-extrabold text-gray-900">{fmt(totals.totalUpperSum)} ₽</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-10 pt-6 border-t border-gray-300 grid grid-cols-2 gap-8 text-sm">
+            <div className="text-center">
+              <div className="border-t border-gray-800 pt-2 mt-8">Подпись заказчика</div>
+            </div>
+            <div className="text-center">
+              <div className="border-t border-gray-800 pt-2 mt-8">Подпись подрядчика</div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -457,11 +526,6 @@ export default function App() {
               Добавить позицию
             </button>
           </div>
-        </div>
-
-        {/* Main table card (print) */}
-        <div className="print-only">
-          {renderTable(true)}
         </div>
 
         {/* Bottom cards */}
@@ -550,27 +614,6 @@ export default function App() {
                   <span className="text-3xl font-extrabold">{fmt(totals.myIncome)} ₽</span>
                 </div>
               </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Print version summary */}
-        <div className="print-only mt-6">
-          <div className="border-t-2 border-gray-400 pt-4 mt-4">
-            <div className="flex justify-end">
-              <div className="text-right">
-                <div className="text-sm text-gray-600">Итого по работам:</div>
-                <div className="text-2xl font-extrabold text-gray-900">{fmt(totals.totalUpperSum)} ₽</div>
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-10 pt-6 border-t border-gray-300 grid grid-cols-2 gap-8 text-sm">
-            <div className="text-center">
-              <div className="border-t border-gray-800 pt-2 mt-8">Подпись заказчика</div>
-            </div>
-            <div className="text-center">
-              <div className="border-t border-gray-800 pt-2 mt-8">Подпись подрядчика</div>
             </div>
           </div>
         </div>
