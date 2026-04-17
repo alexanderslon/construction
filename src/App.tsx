@@ -1,4 +1,5 @@
-import { useState, useRef, useCallback, useMemo } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { toJpeg } from "html-to-image";
 
 interface RowData {
   id: number;
@@ -18,6 +19,14 @@ interface HeaderData {
   squareMeters: string;
   documentNumber: string;
   date: string;
+}
+
+interface DocState {
+  header: HeaderData;
+  rows: RowData[];
+  prepayment: string;
+  laborer: string;
+  otkat: string;
 }
 
 const initialRows: RowData[] = [
@@ -46,6 +55,20 @@ const initialRows: RowData[] = [
 ];
 
 let nextId = 100;
+
+const PREVIEW_STORAGE_PREFIX = "smeta_doc:";
+
+function makePreviewKey(): string {
+  const id =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  return `${PREVIEW_STORAGE_PREFIX}${id}`;
+}
+
+function safeFilename(s: string): string {
+  return s.replace(/[^\w\-]+/g, "_").replace(/_+/g, "_").replace(/^_+|_+$/g, "");
+}
 
 function toNumber(v: unknown): number {
   if (typeof v === "number") return Number.isFinite(v) ? v : 0;
@@ -126,6 +149,10 @@ function EditableCell({
 }
 
 export default function App() {
+  const search = typeof window !== "undefined" ? window.location.search : "";
+  const isPreview = useMemo(() => new URLSearchParams(search).get("preview") === "1", [search]);
+  const previewKey = useMemo(() => new URLSearchParams(search).get("doc") ?? "", [search]);
+
   const [header, setHeader] = useState<HeaderData>({
     city: "Москва",
     address: "",
@@ -141,6 +168,24 @@ export default function App() {
   const [laborer, setLaborer] = useState<string>("0");
   const [otkat, setOtkat] = useState<string>("5000");
   const draggingRowIdRef = useRef<number | null>(null);
+  const printContentRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isPreview) return;
+    if (!previewKey) return;
+    const raw = localStorage.getItem(previewKey);
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as DocState;
+      if (parsed?.header) setHeader(parsed.header);
+      if (parsed?.rows) setRows(parsed.rows);
+      if (typeof parsed?.prepayment === "string") setPrepayment(parsed.prepayment);
+      if (typeof parsed?.laborer === "string") setLaborer(parsed.laborer);
+      if (typeof parsed?.otkat === "string") setOtkat(parsed.otkat);
+    } catch {
+      // ignore malformed storage
+    }
+  }, [isPreview, previewKey]);
 
   const updateRow = useCallback((id: number, field: keyof RowData, value: string | number) => {
     const numericFields: ReadonlySet<keyof RowData> = new Set(["quantity", "workerPrice", "upperPrice"]);
@@ -208,114 +253,118 @@ export default function App() {
     };
   }, [rows, prepayment, laborer, otkat]);
 
-  const handlePrint = () => {
-    const root = document.querySelector<HTMLElement>("[data-print-root]");
-    if (!root) {
-      window.print();
-      return;
-    }
+  const renderPrintDocument = () => (
+    <>
+      <div className="print-header mb-6">
+        <div className="flex justify-between items-start mb-4">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">СМЕТА НА СТРОИТЕЛЬНО-РЕМОНТНЫЕ РАБОТЫ</h1>
+            <p className="text-sm text-gray-600 mt-1">
+              Документ № {header.documentNumber} от {header.date}
+            </p>
+          </div>
+          <div className="text-right text-sm text-gray-700">
+            {header.city && <p>г. {header.city}</p>}
+            {header.address && <p>{header.address}</p>}
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-sm text-gray-800 border-t border-gray-300 pt-3">
+          <div><span className="font-semibold">Заказчик:</span> {header.customerName || "—"}</div>
+          <div><span className="font-semibold">Телефон:</span> {header.customerPhone || "—"}</div>
+          <div><span className="font-semibold">Адрес объекта:</span> {header.address || "—"}</div>
+          <div><span className="font-semibold">Площадь:</span> {header.squareMeters || "—"} м²</div>
+        </div>
+      </div>
 
-    const printWindow = window.open("", "_blank");
-    if (!printWindow) {
-      // Popup blocked — still try regular print as fallback
-      window.print();
-      return;
-    }
+      {renderTable(true)}
 
-    const styles = Array.from(document.querySelectorAll("style, link[rel='stylesheet']"))
-      .map((el) => el.outerHTML)
-      .join("\n");
+      <div className="mt-6">
+        <div className="border-t-2 border-gray-400 pt-4 mt-4">
+          <div className="flex justify-end">
+            <div className="text-right">
+              <div className="text-sm text-gray-600">Итого по работам:</div>
+              <div className="text-2xl font-extrabold text-gray-900">{fmt(totals.totalUpperSum)} ₽</div>
+            </div>
+          </div>
+        </div>
 
-    const filename = `smeta-${header.documentNumber || "doc"}-${header.date || ""}`.replace(/[^\w\-]+/g, "_");
+        <div className="mt-10 pt-6 border-t border-gray-300 grid grid-cols-2 gap-8 text-sm">
+          <div className="text-center">
+            <div className="border-t border-gray-800 pt-2 mt-8">Подпись заказчика</div>
+          </div>
+          <div className="text-center">
+            <div className="border-t border-gray-800 pt-2 mt-8">Подпись подрядчика</div>
+          </div>
+        </div>
+      </div>
+    </>
+  );
 
-    const printHtml = root.innerHTML;
+  const openPreview = () => {
+    const key = makePreviewKey();
+    const state: DocState = { header, rows, prepayment, laborer, otkat };
+    localStorage.setItem(key, JSON.stringify(state));
 
-    printWindow.document.open();
-    printWindow.document.write(`<!doctype html>
-<html lang="ru">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Предпросмотр документа</title>
-    ${styles}
-    <style>
-      body { background: #f5f6f8; }
-      /* In preview we want to show the print layout */
-      .print-only { display: block !important; }
-      .no-print { display: none !important; }
-      .preview-toolbar {
-        position: sticky;
-        top: 0;
-        z-index: 50;
-        display: flex;
-        gap: 10px;
-        align-items: center;
-        padding: 12px 14px;
-        background: white;
-        border-bottom: 1px solid rgba(0,0,0,.08);
-      }
-      .preview-btn {
-        appearance: none;
-        border: 0;
-        border-radius: 10px;
-        padding: 10px 14px;
-        font-weight: 700;
-        cursor: pointer;
-      }
-      .preview-btn:active { transform: scale(.98); }
-      .preview-btn-primary { background: #059669; color: white; }
-      .preview-btn-secondary { background: #2563eb; color: white; }
-      .preview-hint { margin-left: auto; color: #6b7280; font-size: 12px; }
-      .preview-sheet {
-        max-width: 1200px;
-        margin: 16px auto;
-        background: white;
-        border: 1px solid rgba(0,0,0,.08);
-        border-radius: 14px;
-        padding: 16px;
-        box-shadow: 0 10px 30px rgba(0,0,0,.08);
-      }
-      @media print {
-        .preview-toolbar { display: none !important; }
-        body { background: white !important; }
-        .preview-sheet {
-          max-width: none;
-          margin: 0;
-          padding: 0;
-          border: 0;
-          border-radius: 0;
-          box-shadow: none;
-        }
-      }
-    </style>
-  </head>
-  <body>
-    <div class="preview-toolbar">
-      <button class="preview-btn preview-btn-primary" onclick="window.print()">Печать / PDF</button>
-      <button class="preview-btn preview-btn-secondary" onclick="downloadHtml()">Скачать (HTML)</button>
-      <div class="preview-hint">В печати выбери «Сохранить как PDF», если нужен PDF</div>
-    </div>
-    <div class="preview-sheet">
-      ${printHtml}
-    </div>
-    <script>
-      function downloadHtml() {
-        const html = '<!doctype html>' + document.documentElement.outerHTML;
-        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = '${filename}.html';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
-      }
-    </script>
-  </body>
-</html>`);
-    printWindow.document.close();
+    const url = new URL(window.location.href);
+    url.searchParams.set("preview", "1");
+    url.searchParams.set("doc", key);
+    window.open(url.toString(), "_blank");
   };
+
+  const downloadJpg = async () => {
+    const el = printContentRef.current;
+    if (!el) return;
+
+    const baseName = safeFilename(`smeta-${header.documentNumber || "doc"}-${header.date || ""}`) || "smeta";
+    const dataUrl = await toJpeg(el, {
+      quality: 0.95,
+      backgroundColor: "#ffffff",
+      pixelRatio: 2,
+    });
+    const a = document.createElement("a");
+    a.href = dataUrl;
+    a.download = `${baseName}.jpg`;
+    a.click();
+  };
+
+  if (isPreview) {
+    return (
+      <div className="min-h-screen bg-slate-100">
+        <div className="sticky top-0 z-50 bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-3">
+          <button
+            onClick={() => window.print()}
+            className="inline-flex items-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-emerald-700 transition active:scale-95"
+            type="button"
+          >
+            Печать / PDF
+          </button>
+          <button
+            onClick={() => void downloadJpg()}
+            className="inline-flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-700 transition active:scale-95"
+            type="button"
+          >
+            Скачать JPG
+          </button>
+          <button
+            onClick={() => window.close()}
+            className="inline-flex items-center gap-2 bg-gray-100 text-gray-700 px-4 py-2 rounded-lg font-semibold hover:bg-gray-200 transition active:scale-95"
+            type="button"
+          >
+            Закрыть
+          </button>
+          <div className="ml-auto text-xs text-gray-500">
+            Для PDF: «Печать / PDF» → «Сохранить как PDF»
+          </div>
+        </div>
+
+        <div className="max-w-[1200px] mx-auto p-4">
+          <div ref={printContentRef} className="bg-white rounded-2xl shadow-md border border-gray-100 p-4">
+            {renderPrintDocument()}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const headerField = (key: keyof HeaderData, label: string, placeholder: string) => (
     <div className="flex flex-col gap-1">
@@ -491,47 +540,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-100 to-blue-50">
       <div data-print-root className="print-only">
-        {/* ===== PRINT HEADER ===== */}
-        <div className="print-header mb-6">
-          <div className="flex justify-between items-start mb-4">
-            <div>
-              <h1 className="text-2xl font-bold text-gray-900">СМЕТА НА СТРОИТЕЛЬНО-РЕМОНТНЫЕ РАБОТЫ</h1>
-              <p className="text-sm text-gray-600 mt-1">Документ № {header.documentNumber} от {header.date}</p>
-            </div>
-            <div className="text-right text-sm text-gray-700">
-              {header.city && <p>г. {header.city}</p>}
-              {header.address && <p>{header.address}</p>}
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-sm text-gray-800 border-t border-gray-300 pt-3">
-            <div><span className="font-semibold">Заказчик:</span> {header.customerName || "—"}</div>
-            <div><span className="font-semibold">Телефон:</span> {header.customerPhone || "—"}</div>
-            <div><span className="font-semibold">Адрес объекта:</span> {header.address || "—"}</div>
-            <div><span className="font-semibold">Площадь:</span> {header.squareMeters || "—"} м²</div>
-          </div>
-        </div>
-
-        {renderTable(true)}
-
-        <div className="mt-6">
-          <div className="border-t-2 border-gray-400 pt-4 mt-4">
-            <div className="flex justify-end">
-              <div className="text-right">
-                <div className="text-sm text-gray-600">Итого по работам:</div>
-                <div className="text-2xl font-extrabold text-gray-900">{fmt(totals.totalUpperSum)} ₽</div>
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-10 pt-6 border-t border-gray-300 grid grid-cols-2 gap-8 text-sm">
-            <div className="text-center">
-              <div className="border-t border-gray-800 pt-2 mt-8">Подпись заказчика</div>
-            </div>
-            <div className="text-center">
-              <div className="border-t border-gray-800 pt-2 mt-8">Подпись подрядчика</div>
-            </div>
-          </div>
-        </div>
+        {renderPrintDocument()}
       </div>
 
       {/* ===== SCREEN LAYOUT ===== */}
@@ -547,11 +556,11 @@ export default function App() {
             </div>
             <div className="flex gap-3">
               <button
-                onClick={handlePrint}
+                onClick={openPreview}
                 className="flex items-center gap-2 bg-emerald-600 text-white px-5 py-2.5 rounded-xl font-semibold hover:bg-emerald-700 transition shadow-lg shadow-emerald-200 active:scale-95"
               >
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/></svg>
-                Печать
+                Предпросмотр
               </button>
             </div>
           </div>
