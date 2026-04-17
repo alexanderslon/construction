@@ -327,45 +327,6 @@ export default function App() {
     a.click();
   };
 
-  if (isPreview) {
-    return (
-      <div className="min-h-screen bg-slate-100">
-        <div className="sticky top-0 z-50 bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-3">
-          <button
-            onClick={() => window.print()}
-            className="inline-flex items-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-emerald-700 transition active:scale-95"
-            type="button"
-          >
-            Печать / PDF
-          </button>
-          <button
-            onClick={() => void downloadJpg()}
-            className="inline-flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-700 transition active:scale-95"
-            type="button"
-          >
-            Скачать JPG
-          </button>
-          <button
-            onClick={() => window.close()}
-            className="inline-flex items-center gap-2 bg-gray-100 text-gray-700 px-4 py-2 rounded-lg font-semibold hover:bg-gray-200 transition active:scale-95"
-            type="button"
-          >
-            Закрыть
-          </button>
-          <div className="ml-auto text-xs text-gray-500">
-            Для PDF: «Печать / PDF» → «Сохранить как PDF»
-          </div>
-        </div>
-
-        <div className="max-w-[1200px] mx-auto p-4">
-          <div ref={printContentRef} className="bg-white rounded-2xl shadow-md border border-gray-100 p-4">
-            {renderPrintDocument()}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   const headerField = (key: keyof HeaderData, label: string, placeholder: string) => (
     <div className="flex flex-col gap-1">
       <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{label}</label>
@@ -536,6 +497,45 @@ export default function App() {
       </div>
     );
   };
+
+  if (isPreview) {
+    return (
+      <div className="min-h-screen bg-slate-100">
+        <div className="sticky top-0 z-50 bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-3">
+          <button
+            onClick={() => window.print()}
+            className="inline-flex items-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-emerald-700 transition active:scale-95"
+            type="button"
+          >
+            Печать / PDF
+          </button>
+          <button
+            onClick={() => void downloadJpg()}
+            className="inline-flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-700 transition active:scale-95"
+            type="button"
+          >
+            Скачать JPG
+          </button>
+          <button
+            onClick={() => window.close()}
+            className="inline-flex items-center gap-2 bg-gray-100 text-gray-700 px-4 py-2 rounded-lg font-semibold hover:bg-gray-200 transition active:scale-95"
+            type="button"
+          >
+            Закрыть
+          </button>
+          <div className="ml-auto text-xs text-gray-500">
+            Для PDF: «Печать / PDF» → «Сохранить как PDF»
+          </div>
+        </div>
+
+        <div className="max-w-[1200px] mx-auto p-4">
+          <div ref={printContentRef} className="bg-white rounded-2xl shadow-md border border-gray-100 p-4">
+            {renderPrintDocument()}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-100 to-blue-50">
