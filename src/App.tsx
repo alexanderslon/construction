@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
-import { toJpeg } from "html-to-image";
+import { toBlob } from "html-to-image";
 
 interface RowData {
   id: number;
@@ -316,15 +316,42 @@ export default function App() {
     if (!el) return;
 
     const baseName = safeFilename(`smeta-${header.documentNumber || "doc"}-${header.date || ""}`) || "smeta";
-    const dataUrl = await toJpeg(el, {
-      quality: 0.95,
-      backgroundColor: "#ffffff",
-      pixelRatio: 2,
-    });
-    const a = document.createElement("a");
-    a.href = dataUrl;
-    a.download = `${baseName}.jpg`;
-    a.click();
+    try {
+      const blob = await toBlob(el, {
+        quality: 0.95,
+        backgroundColor: "#ffffff",
+        pixelRatio: 2,
+      });
+      if (!blob) return;
+
+      const file = new File([blob], `${baseName}.jpg`, { type: "image/jpeg" });
+
+      // Mobile-friendly: use share sheet when possible
+      const nav = navigator as unknown as {
+        canShare?: (data: { files?: File[] }) => boolean;
+        share?: (data: { files?: File[]; title?: string }) => Promise<void>;
+      };
+      if (nav.share && (!nav.canShare || nav.canShare({ files: [file] }))) {
+        await nav.share({ files: [file], title: baseName });
+        return;
+      }
+
+      // Fallback: open image in a new tab (iOS Safari doesn't reliably support download attribute)
+      const url = URL.createObjectURL(blob);
+      const w = window.open(url, "_blank");
+      // If popup blocked, last resort: try download attribute anyway
+      if (!w) {
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${baseName}.jpg`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }
+      setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    } catch {
+      // If rendering fails, do nothing (avoid breaking the page)
+    }
   };
 
   const headerField = (key: keyof HeaderData, label: string, placeholder: string) => (
