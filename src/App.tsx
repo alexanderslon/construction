@@ -215,9 +215,9 @@ export default function App() {
       return;
     }
 
-    const printWindow = window.open("", "_blank", "noopener,noreferrer");
+    const printWindow = window.open("", "_blank");
     if (!printWindow) {
-      // popup blocked – fall back to regular print
+      // Popup blocked — still try regular print as fallback
       window.print();
       return;
     }
@@ -226,33 +226,90 @@ export default function App() {
       .map((el) => el.outerHTML)
       .join("\n");
 
+    const filename = `smeta-${header.documentNumber || "doc"}-${header.date || ""}`.replace(/[^\w\-]+/g, "_");
+
     printWindow.document.open();
     printWindow.document.write(`<!doctype html>
 <html lang="ru">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Печать документа</title>
+    <title>Предпросмотр документа</title>
     ${styles}
+    <style>
+      body { background: #f5f6f8; }
+      .preview-toolbar {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        padding: 12px 14px;
+        background: white;
+        border-bottom: 1px solid rgba(0,0,0,.08);
+      }
+      .preview-btn {
+        appearance: none;
+        border: 0;
+        border-radius: 10px;
+        padding: 10px 14px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .preview-btn:active { transform: scale(.98); }
+      .preview-btn-primary { background: #059669; color: white; }
+      .preview-btn-secondary { background: #2563eb; color: white; }
+      .preview-hint { margin-left: auto; color: #6b7280; font-size: 12px; }
+      .preview-sheet {
+        max-width: 1200px;
+        margin: 16px auto;
+        background: white;
+        border: 1px solid rgba(0,0,0,.08);
+        border-radius: 14px;
+        padding: 16px;
+        box-shadow: 0 10px 30px rgba(0,0,0,.08);
+      }
+      @media print {
+        .preview-toolbar { display: none !important; }
+        body { background: white !important; }
+        .preview-sheet {
+          max-width: none;
+          margin: 0;
+          padding: 0;
+          border: 0;
+          border-radius: 0;
+          box-shadow: none;
+        }
+      }
+    </style>
   </head>
   <body>
-    ${root.innerHTML}
+    <div class="preview-toolbar">
+      <button class="preview-btn preview-btn-primary" onclick="window.print()">Печать / PDF</button>
+      <button class="preview-btn preview-btn-secondary" onclick="downloadHtml()">Скачать (HTML)</button>
+      <div class="preview-hint">В печати выбери «Сохранить как PDF», если нужен PDF</div>
+    </div>
+    <div class="preview-sheet">
+      ${root.outerHTML}
+    </div>
+    <script>
+      function downloadHtml() {
+        const html = '<!doctype html>' + document.documentElement.outerHTML;
+        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = '${filename}.html';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+    </script>
   </body>
 </html>`);
     printWindow.document.close();
-
-    const trigger = () => {
-      printWindow.focus();
-      // give browser a beat to apply styles
-      setTimeout(() => {
-        printWindow.print();
-        printWindow.close();
-      }, 150);
-    };
-
-    // Some browsers need onload, some are fine immediately.
-    printWindow.onload = trigger;
-    setTimeout(trigger, 300);
   };
 
   const headerField = (key: keyof HeaderData, label: string, placeholder: string) => (
