@@ -334,36 +334,21 @@ export default function App() {
       });
       if (!blob) throw new Error("Не удалось сформировать изображение");
 
-      const file = new File([blob], `${baseName}.jpg`, { type: "image/jpeg" });
-
-      // Mobile-friendly: use share sheet when possible
-      const nav = navigator as unknown as {
-        canShare?: (data: { files?: File[] }) => boolean;
-        share?: (data: { files?: File[]; title?: string }) => Promise<void>;
-      };
-      if (nav.share && (!nav.canShare || nav.canShare({ files: [file] }))) {
-        await nav.share({ files: [file], title: baseName });
-        return;
-      }
-
-      // iOS Safari: download attribute is unreliable — open image for "Save Image"
+      // Не вызываем navigator.share() после await — жест пользователя уже «сгорел»,
+      // Chrome пишет: "Must be handling a user gesture to perform a share".
+      const url = URL.createObjectURL(blob);
       const ua = navigator.userAgent || "";
       const isIOS = /iP(hone|ad|od)/.test(ua);
       if (isIOS) {
-        const url = URL.createObjectURL(blob);
         window.open(url, "_blank");
-        setTimeout(() => URL.revokeObjectURL(url), 30_000);
-        return;
+      } else {
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${baseName}.jpg`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
       }
-
-      // Desktop/Android fallback: trigger real download
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${baseName}.jpg`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 30_000);
     } catch (e) {
       console.error("JPG export failed", e);
