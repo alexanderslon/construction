@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
-import { toBlob } from "html-to-image";
+import { toJpeg } from "html-to-image";
 
 interface RowData {
   id: number;
@@ -171,8 +171,8 @@ export default function App() {
   const printContentRef = useRef<HTMLDivElement | null>(null);
   const [exporting, setExporting] = useState(false);
   const [lastExportError, setLastExportError] = useState<string>("");
-  /** После async toBlob мобильные браузеры часто блокируют программный click/open — даём явную ссылку (второй тап). */
-  const [jpgReady, setJpgReady] = useState<{ url: string; filename: string } | null>(null);
+  /** На телефоне после await программный скачивание часто блокируется — показываем dataURL-ссылку вторым шагом. */
+  const [jpgReady, setJpgReady] = useState<{ dataUrl: string; filename: string } | null>(null);
 
   useEffect(() => {
     if (!isPreview) return;
@@ -190,12 +190,6 @@ export default function App() {
       // ignore malformed storage
     }
   }, [isPreview, previewKey]);
-
-  useEffect(() => {
-    return () => {
-      if (jpgReady?.url) URL.revokeObjectURL(jpgReady.url);
-    };
-  }, [jpgReady?.url]);
 
   const updateRow = useCallback((id: number, field: keyof RowData, value: string | number) => {
     const numericFields: ReadonlySet<keyof RowData> = new Set(["quantity", "workerPrice", "upperPrice"]);
@@ -331,42 +325,39 @@ export default function App() {
     try {
       setExporting(true);
       setLastExportError("");
-      if (jpgReady?.url) {
-        URL.revokeObjectURL(jpgReady.url);
-        setJpgReady(null);
-      }
+      setJpgReady(null);
       // Wait for fonts/images to reduce blank exports
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const fonts = (document as any).fonts;
       if (fonts?.ready) await fonts.ready;
 
-      const blob = await toBlob(el, {
-        quality: 0.95,
-        backgroundColor: "#ffffff",
-        pixelRatio: 2,
-        cacheBust: true,
-      });
-      if (!blob) throw new Error("Не удалось сформировать изображение");
-
-      const url = URL.createObjectURL(blob);
-      const filename = `${baseName}.jpg`;
-      // На телефонах программный click() и window.open(blob) после await часто блокируются — показываем реальную ссылку (новый тап = валидный жест).
       const prefersCoarse =
         typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches;
       const narrow =
         typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches;
-      if (prefersCoarse || narrow) {
-        setJpgReady({ url, filename });
+      const isTouchLike = prefersCoarse || narrow;
+
+      const dataUrl = await toJpeg(el, {
+        quality: 0.92,
+        backgroundColor: "#ffffff",
+        pixelRatio: isTouchLike ? 1.75 : 2,
+        cacheBust: true,
+      });
+      if (!dataUrl) throw new Error("Не удалось сформировать изображение");
+
+      const filename = `${baseName}.jpg`;
+
+      if (isTouchLike) {
+        setJpgReady({ dataUrl, filename });
         return;
       }
 
       const a = document.createElement("a");
-      a.href = url;
+      a.href = dataUrl;
       a.download = filename;
       document.body.appendChild(a);
       a.click();
       a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } catch (e) {
       console.error("JPG export failed", e);
       const msg = e instanceof Error ? e.message : String(e);
@@ -548,52 +539,48 @@ export default function App() {
     );
   };
 
-  const handlePreviewPrint = () => {
-    window.print();
-  };
-
   if (isPreview) {
     return (
       <div className="min-h-screen bg-slate-100">
-        <div className="sticky top-0 z-50 bg-white border-b border-gray-200 px-3 py-3 sm:px-4">
-          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3 max-w-[1200px] mx-auto">
+        <div className="sticky top-0 z-50 bg-white border-b border-gray-200 px-4 py-3">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3 max-w-[1200px] mx-auto">
             <button
-              onClick={handlePreviewPrint}
-              className="touch-manipulation inline-flex w-full sm:w-auto justify-center items-center gap-2 bg-emerald-600 text-white px-4 py-3 sm:py-2 rounded-lg font-semibold hover:bg-emerald-700 transition active:scale-95"
+              onClick={() => window.print()}
+              className="inline-flex items-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-emerald-700 transition active:scale-95"
               type="button"
             >
               Печать / PDF
             </button>
             <button
               onClick={() => void downloadJpg()}
-              className={`touch-manipulation inline-flex w-full sm:w-auto justify-center items-center gap-2 px-4 py-3 sm:py-2 rounded-lg font-semibold transition active:scale-95 ${exporting ? "bg-blue-400 text-white cursor-not-allowed" : "bg-blue-600 text-white hover:bg-blue-700"}`}
+              className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg font-semibold transition active:scale-95 ${exporting ? "bg-blue-400 text-white cursor-not-allowed" : "bg-blue-600 text-white hover:bg-blue-700"}`}
               type="button"
               disabled={exporting}
             >
-              {exporting ? "Готовим JPG..." : "Сделать JPG"}
+              {exporting ? "Готовим JPG..." : "Скачать JPG"}
             </button>
+            {jpgReady && (
+              <a
+                href={jpgReady.dataUrl}
+                download={jpgReady.filename}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sm font-semibold text-blue-700 underline underline-offset-2"
+              >
+                Скачать файл
+              </a>
+            )}
             <button
               onClick={() => window.close()}
-              className="touch-manipulation inline-flex w-full sm:w-auto justify-center items-center gap-2 bg-gray-100 text-gray-700 px-4 py-3 sm:py-2 rounded-lg font-semibold hover:bg-gray-200 transition active:scale-95"
+              className="inline-flex items-center gap-2 bg-gray-100 text-gray-700 px-4 py-2 rounded-lg font-semibold hover:bg-gray-200 transition active:scale-95"
               type="button"
             >
               Закрыть
             </button>
-            <p className="text-xs text-gray-500 sm:ml-auto sm:max-w-[14rem]">
-              PDF: «Печать» → принтер → «Сохранить как PDF». Если печать не открывается — открой сайт в Safari или Chrome, не из встроенного браузера приложения.
-            </p>
+            <span className="text-xs text-gray-500 ml-auto max-w-[220px] text-right leading-snug max-sm:ml-0 max-sm:basis-full max-sm:text-left">
+              PDF: Печать → «Сохранить как PDF». На телефоне после «Скачать JPG» нажми «Скачать файл».
+            </span>
           </div>
-          {jpgReady && (
-            <div className="max-w-[1200px] mx-auto px-1 pt-2 pb-1">
-              <a
-                href={jpgReady.url}
-                download={jpgReady.filename}
-                className="touch-manipulation flex w-full items-center justify-center rounded-xl bg-indigo-600 px-4 py-4 text-center text-base font-bold text-white shadow-lg active:scale-[0.99]"
-              >
-                Нажми сюда — сохранить JPG
-              </a>
-            </div>
-          )}
         </div>
 
         {lastExportError && (
