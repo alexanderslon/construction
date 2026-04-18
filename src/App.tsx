@@ -71,11 +71,27 @@ function safeFilename(s: string): string {
   return s.replace(/[^\w\-]+/g, "_").replace(/_+/g, "_").replace(/^_+|_+$/g, "");
 }
 
-function touchLikeExportPixelRatio(): number {
-  if (typeof window === "undefined") return 2;
-  const prefersCoarse = window.matchMedia("(pointer: coarse)").matches;
-  const narrow = window.matchMedia("(max-width: 768px)").matches;
-  return prefersCoarse || narrow ? 1.75 : 2;
+/** Ширина A4 в CSS-пикселях (~210 mm при 96 DPI). Без этого на телефоне в JPEG попадает узкая колонка экрана. */
+const A4_EXPORT_WIDTH_PX = 794;
+
+async function withA4PageWidthForExport<T>(el: HTMLElement, run: () => Promise<T>): Promise<T> {
+  const prevWidth = el.style.width;
+  const prevMaxWidth = el.style.maxWidth;
+  const prevMinWidth = el.style.minWidth;
+  const prevBoxSizing = el.style.boxSizing;
+  el.style.boxSizing = "border-box";
+  el.style.width = `${A4_EXPORT_WIDTH_PX}px`;
+  el.style.maxWidth = `${A4_EXPORT_WIDTH_PX}px`;
+  el.style.minWidth = `${A4_EXPORT_WIDTH_PX}px`;
+  void el.offsetHeight;
+  try {
+    return await run();
+  } finally {
+    el.style.width = prevWidth;
+    el.style.maxWidth = prevMaxWidth;
+    el.style.minWidth = prevMinWidth;
+    el.style.boxSizing = prevBoxSizing;
+  }
 }
 
 /** iPhone / iPad / iPod; iPadOS 13+ в режиме «десктоп» часто маскируется под Mac. */
@@ -377,12 +393,14 @@ export default function App() {
       const fonts = (document as any).fonts;
       if (fonts?.ready) await fonts.ready;
 
-      const dataUrl = await toJpeg(el, {
-        quality: 0.92,
-        backgroundColor: "#ffffff",
-        pixelRatio: touchLikeExportPixelRatio(),
-        cacheBust: true,
-      });
+      const dataUrl = await withA4PageWidthForExport(el, () =>
+        toJpeg(el, {
+          quality: 0.92,
+          backgroundColor: "#ffffff",
+          pixelRatio: 2,
+          cacheBust: true,
+        })
+      );
       if (!dataUrl) throw new Error("Не удалось сформировать изображение");
 
       const filename = `${baseName}.jpg`;
@@ -661,9 +679,9 @@ export default function App() {
               >
                 Закрыть
               </button>
-              <span className="text-xs text-gray-500 ml-auto max-w-[260px] text-right leading-snug max-sm:ml-0 max-sm:basis-full max-sm:text-left">
-                «Печать / PDF» — системный диалог. «Скачать JPG» — сразу в загрузки. Из Telegram откройте страницу
-                в браузере.
+              <span className="text-xs text-gray-500 ml-auto max-w-[280px] text-right leading-snug max-sm:ml-0 max-sm:basis-full max-sm:text-left">
+                JPG сохраняется с шириной листа A4 (не узкая колонка экрана). «Печать / PDF» — системный диалог.
+                Из Telegram откройте в браузере.
               </span>
             </div>
           </div>
