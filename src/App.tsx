@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { toJpeg } from "html-to-image";
 import { jsPDF } from "jspdf";
+import { saveAs } from "file-saver";
 
 interface RowData {
   id: number;
@@ -72,7 +73,7 @@ function safeFilename(s: string): string {
 }
 
 /** Landscape A4 PDF from a full-page JPEG data URL (multi-page if content is tall). */
-function exportJpegDataUrlToPdf(dataUrl: string, filename: string) {
+function buildLandscapePdfFromJpegDataUrl(dataUrl: string): jsPDF {
   const pdf = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
   const pageWidth = pdf.internal.pageSize.getWidth();
   const pageHeight = pdf.internal.pageSize.getHeight();
@@ -92,7 +93,7 @@ function exportJpegDataUrlToPdf(dataUrl: string, filename: string) {
     heightLeft -= pageHeight;
   }
 
-  pdf.save(filename);
+  return pdf;
 }
 
 function touchLikeExportPixelRatio(): number {
@@ -109,11 +110,19 @@ function isMobileLikeUi(): boolean {
   );
 }
 
+/** iPhone / iPad / iPod; iPadOS 13+ в режиме «десктоп» часто маскируется под Mac. */
+function isIOS(): boolean {
+  if (typeof navigator === "undefined") return false;
+  if (/iPhone|iPad|iPod/i.test(navigator.userAgent)) return true;
+  if (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1) return true;
+  return false;
+}
+
 function toNumber(v: unknown): number {
   if (typeof v === "number") return Number.isFinite(v) ? v : 0;
   if (typeof v === "string") {
     const cleaned = v
-      .replaceAll("\u00A0", " ")
+      .replace(/\u00A0/g, " ")
       .replace(/\s+/g, "")
       .replace(",", ".");
     const n = parseFloat(cleaned);
@@ -210,8 +219,9 @@ export default function App() {
   const printContentRef = useRef<HTMLDivElement | null>(null);
   const [exporting, setExporting] = useState(false);
   const [lastExportError, setLastExportError] = useState<string>("");
-  /** На телефоне после await программный скачивание часто блокируется — показываем dataURL-ссылку вторым шагом. */
+  /** Резерв, если file-saver / saveAs не смог сохранить файл (редко на экзотических WebView). */
   const [jpgReady, setJpgReady] = useState<{ dataUrl: string; filename: string } | null>(null);
+  const [iosPrintHelpOpen, setIosPrintHelpOpen] = useState(false);
 
   useEffect(() => {
     if (!isPreview) return;
@@ -356,7 +366,7 @@ export default function App() {
     if (!w) window.location.assign(next);
   };
 
-  const handlePreviewPrint = useCallback(() => {
+  const runSystemPrint = useCallback(() => {
     const restore = () => {
       document.querySelectorAll<HTMLElement>(".no-print").forEach((node) => {
         node.style.removeProperty("display");
@@ -370,6 +380,14 @@ export default function App() {
       window.setTimeout(restore, 500);
     }, 100);
   }, []);
+
+  const handlePreviewPrint = useCallback(() => {
+    if (isIOS()) {
+      setIosPrintHelpOpen(true);
+      return;
+    }
+    runSystemPrint();
+  }, [runSystemPrint]);
 
   const downloadPdf = async () => {
     const el = printContentRef.current;
@@ -392,7 +410,18 @@ export default function App() {
       });
       if (!dataUrl) throw new Error("Не удалось сформировать изображение");
 
-      exportJpegDataUrlToPdf(dataUrl, `${baseName}.pdf`);
+      const pdfFilename = `${baseName}.pdf`;
+      const pdf = buildLandscapePdfFromJpegDataUrl(dataUrl);
+      const pdfBlob = pdf.output("blob");
+      try {
+        saveAs(pdfBlob, pdfFilename);
+      } catch (saveErr) {
+        console.warn("saveAs(PDF) failed, opening blob in new tab", saveErr);
+        const url = URL.createObjectURL(pdfBlob);
+        const w = window.open(url, "_blank", "noopener,noreferrer");
+        if (!w) window.location.assign(url);
+        window.setTimeout(() => URL.revokeObjectURL(url), 120_000);
+      }
     } catch (e) {
       console.error("PDF export failed", e);
       const msg = e instanceof Error ? e.message : String(e);
@@ -419,8 +448,6 @@ export default function App() {
       const fonts = (document as any).fonts;
       if (fonts?.ready) await fonts.ready;
 
-      const isTouchLike = isMobileLikeUi();
-
       const dataUrl = await toJpeg(el, {
         quality: 0.92,
         backgroundColor: "#ffffff",
@@ -430,18 +457,13 @@ export default function App() {
       if (!dataUrl) throw new Error("Не удалось сформировать изображение");
 
       const filename = `${baseName}.jpg`;
-
-      if (isTouchLike) {
+      try {
+        const blob = await (await fetch(dataUrl)).blob();
+        saveAs(blob, filename);
+      } catch (saveErr) {
+        console.warn("saveAs(JPG) failed, data URL link fallback", saveErr);
         setJpgReady({ dataUrl, filename });
-        return;
       }
-
-      const a = document.createElement("a");
-      a.href = dataUrl;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
     } catch (e) {
       console.error("JPG export failed", e);
       const msg = e instanceof Error ? e.message : String(e);
@@ -628,6 +650,62 @@ export default function App() {
   if (isPreview) {
     return (
       <div className="min-h-screen bg-slate-100">
+        {iosPrintHelpOpen && (
+          <div
+            className="no-print fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ios-print-title"
+            onClick={() => setIosPrintHelpOpen(false)}
+          >
+            <div
+              className="bg-white rounded-2xl shadow-xl max-w-md w-full p-6"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h2 id="ios-print-title" className="text-lg font-bold text-gray-900 mb-2">
+                Печать на iPhone / iPad
+              </h2>
+              <p className="text-sm text-gray-600 mb-3">
+                В Safari диалог системной печати часто недоступен. Надёжный способ:
+              </p>
+              <ol className="list-decimal pl-5 text-sm text-gray-700 space-y-1 mb-5">
+                <li>Нажмите «Скачать PDF» ниже или в панели.</li>
+                <li>Откройте сохранённый файл.</li>
+                <li>
+                  Меню «Поделиться» <span aria-hidden="true">↑</span> → «Печать» или «Сохранить в Файлы».
+                </li>
+              </ol>
+              <button
+                type="button"
+                className="w-full py-3 rounded-xl font-semibold text-white bg-violet-600 hover:bg-violet-700 transition mb-2"
+                onClick={() => {
+                  setIosPrintHelpOpen(false);
+                  void downloadPdf();
+                }}
+              >
+                Скачать PDF
+              </button>
+              <button
+                type="button"
+                className="w-full py-3 rounded-xl font-semibold bg-gray-100 text-gray-800 hover:bg-gray-200 transition mb-2"
+                onClick={() => {
+                  setIosPrintHelpOpen(false);
+                  runSystemPrint();
+                }}
+              >
+                Попробовать системную печать
+              </button>
+              <button
+                type="button"
+                className="w-full py-3 rounded-xl font-semibold text-gray-600 hover:bg-gray-50 transition"
+                onClick={() => setIosPrintHelpOpen(false)}
+              >
+                Закрыть
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="no-print sticky top-0 z-50 bg-white border-b border-gray-200 px-4 py-3">
           <div className="flex flex-wrap items-center gap-2 sm:gap-3 max-w-[1200px] mx-auto">
             <button
@@ -674,8 +752,8 @@ export default function App() {
             <span className="text-xs text-gray-500 ml-auto max-w-[280px] text-right leading-snug max-sm:ml-0 max-sm:basis-full max-sm:text-left">
               {isMobileLikeUi() ? (
                 <>
-                  На телефоне удобнее «Скачать PDF». Печать: меню «Поделиться» → «Печать» или «Сохранить как PDF».
-                  После «Скачать JPG» может понадобиться ссылка «Скачать файл (JPG)».
+                  Предпочтительно «Скачать PDF». Печать: «Поделиться» → «Печать». Если JPG не сохранился —
+                  появится ссылка «Скачать файл (JPG)».
                 </>
               ) : (
                 <>PDF-файл: кнопка «Скачать PDF» или «Печать / PDF» → в диалоге «Сохранить как PDF».</>
