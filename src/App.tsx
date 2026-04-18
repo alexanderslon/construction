@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { toJpeg } from "html-to-image";
-import { jsPDF } from "jspdf";
 import { saveAs } from "file-saver";
 
 interface RowData {
@@ -72,42 +71,11 @@ function safeFilename(s: string): string {
   return s.replace(/[^\w\-]+/g, "_").replace(/_+/g, "_").replace(/^_+|_+$/g, "");
 }
 
-/** Landscape A4 PDF from a full-page JPEG data URL (multi-page if content is tall). */
-function buildLandscapePdfFromJpegDataUrl(dataUrl: string): jsPDF {
-  const pdf = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
-  const pageWidth = pdf.internal.pageSize.getWidth();
-  const pageHeight = pdf.internal.pageSize.getHeight();
-  const props = pdf.getImageProperties(dataUrl);
-  const imgWidth = pageWidth;
-  const imgHeight = (props.height * imgWidth) / props.width;
-  let heightLeft = imgHeight;
-  let position = 0;
-
-  pdf.addImage(dataUrl, "JPEG", 0, position, imgWidth, imgHeight);
-  heightLeft -= pageHeight;
-
-  while (heightLeft > 0) {
-    position = heightLeft - imgHeight;
-    pdf.addPage();
-    pdf.addImage(dataUrl, "JPEG", 0, position, imgWidth, imgHeight);
-    heightLeft -= pageHeight;
-  }
-
-  return pdf;
-}
-
 function touchLikeExportPixelRatio(): number {
   if (typeof window === "undefined") return 2;
   const prefersCoarse = window.matchMedia("(pointer: coarse)").matches;
   const narrow = window.matchMedia("(max-width: 768px)").matches;
   return prefersCoarse || narrow ? 1.75 : 2;
-}
-
-function isMobileLikeUi(): boolean {
-  if (typeof window === "undefined") return false;
-  return (
-    window.matchMedia("(pointer: coarse)").matches || window.matchMedia("(max-width: 768px)").matches
-  );
 }
 
 /** iPhone / iPad / iPod; iPadOS 13+ в режиме «десктоп» часто маскируется под Mac. */
@@ -118,23 +86,15 @@ function isIOS(): boolean {
   return false;
 }
 
-/**
- * После любого await мобильные браузеры сбрасывают «user activation» — программный saveAs/click
- * часто игнорируется. Нужен второй явный тап по готовому файлу.
- */
-function shouldDeferFileSave(): boolean {
-  if (typeof window === "undefined") return false;
-  if (isIOS()) return true;
-  if (typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent)) return true;
-  return isMobileLikeUi();
+/** Встроенные браузеры (Telegram, Instagram, …) часто блокируют blob, печать и загрузки. */
+function isEmbeddedInAppBrowser(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  return (
+    /Telegram|Instagram|FBAN|FBAV|FB_IAB|Line\//i.test(ua) ||
+    /VKWebApp|MicroMessenger|Snapchat/i.test(ua)
+  );
 }
-
-type PendingBlobFile = {
-  blob: Blob;
-  filename: string;
-  objectUrl: string;
-  kind: "pdf" | "jpg";
-};
 
 function toNumber(v: unknown): number {
   if (typeof v === "number") return Number.isFinite(v) ? v : 0;
@@ -237,30 +197,7 @@ export default function App() {
   const printContentRef = useRef<HTMLDivElement | null>(null);
   const [exporting, setExporting] = useState(false);
   const [lastExportError, setLastExportError] = useState<string>("");
-  /** Резерв, если не удалось получить Blob из data URL (редкий сбой fetch). */
-  const [jpgReady, setJpgReady] = useState<{ dataUrl: string; filename: string } | null>(null);
-  /** На мобильных файл кладём сюда — второй тап по кнопке вызывает saveAs в том же жесте. */
-  const [pendingBlobFile, setPendingBlobFile] = useState<PendingBlobFile | null>(null);
   const [iosPrintHelpOpen, setIosPrintHelpOpen] = useState(false);
-
-  const clearPendingFile = useCallback(() => {
-    setPendingBlobFile((prev) => {
-      if (prev?.objectUrl) URL.revokeObjectURL(prev.objectUrl);
-      return null;
-    });
-  }, []);
-
-  const setPendingFromBlob = useCallback((blob: Blob, filename: string, kind: "pdf" | "jpg") => {
-    setPendingBlobFile((prev) => {
-      if (prev?.objectUrl) URL.revokeObjectURL(prev.objectUrl);
-      return {
-        blob,
-        filename,
-        objectUrl: URL.createObjectURL(blob),
-        kind,
-      };
-    });
-  }, []);
 
   useEffect(() => {
     if (!isPreview) return;
@@ -278,11 +215,6 @@ export default function App() {
       // ignore malformed storage
     }
   }, [isPreview, previewKey]);
-
-  useEffect(() => {
-    if (!pendingBlobFile) return;
-    document.getElementById("pending-save-panel")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  }, [pendingBlobFile]);
 
   const updateRow = useCallback((id: number, field: keyof RowData, value: string | number) => {
     const numericFields: ReadonlySet<keyof RowData> = new Set(["quantity", "workerPrice", "upperPrice"]);
@@ -433,53 +365,6 @@ export default function App() {
     runSystemPrint();
   }, [runSystemPrint]);
 
-  const downloadPdf = async () => {
-    const el = printContentRef.current;
-    if (!el) return;
-
-    const baseName = safeFilename(`smeta-${header.documentNumber || "doc"}-${header.date || ""}`) || "smeta";
-    try {
-      setExporting(true);
-      setLastExportError("");
-      setJpgReady(null);
-      clearPendingFile();
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const fonts = (document as any).fonts;
-      if (fonts?.ready) await fonts.ready;
-
-      const dataUrl = await toJpeg(el, {
-        quality: 0.92,
-        backgroundColor: "#ffffff",
-        pixelRatio: touchLikeExportPixelRatio(),
-        cacheBust: true,
-      });
-      if (!dataUrl) throw new Error("Не удалось сформировать изображение");
-
-      const pdfFilename = `${baseName}.pdf`;
-      const pdf = buildLandscapePdfFromJpegDataUrl(dataUrl);
-      const pdfBlob = pdf.output("blob");
-      if (shouldDeferFileSave()) {
-        setPendingFromBlob(pdfBlob, pdfFilename, "pdf");
-      } else {
-        try {
-          saveAs(pdfBlob, pdfFilename);
-        } catch (saveErr) {
-          console.warn("saveAs(PDF) failed, deferred panel", saveErr);
-          setPendingFromBlob(pdfBlob, pdfFilename, "pdf");
-        }
-      }
-    } catch (e) {
-      console.error("PDF export failed", e);
-      const msg = e instanceof Error ? e.message : String(e);
-      setLastExportError(msg);
-      alert(
-        `Не получилось скачать PDF.\n\nПричина: ${msg}\n\nПопробуй «Печать / PDF» → «Сохранить как PDF» или поделиться страницей.`
-      );
-    } finally {
-      setExporting(false);
-    }
-  };
-
   const downloadJpg = async () => {
     const el = printContentRef.current;
     if (!el) return;
@@ -488,9 +373,6 @@ export default function App() {
     try {
       setExporting(true);
       setLastExportError("");
-      setJpgReady(null);
-      clearPendingFile();
-      // Wait for fonts/images to reduce blank exports
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const fonts = (document as any).fonts;
       if (fonts?.ready) await fonts.ready;
@@ -504,29 +386,13 @@ export default function App() {
       if (!dataUrl) throw new Error("Не удалось сформировать изображение");
 
       const filename = `${baseName}.jpg`;
-      try {
-        const blob = await (await fetch(dataUrl)).blob();
-        if (shouldDeferFileSave()) {
-          setPendingFromBlob(blob, filename, "jpg");
-        } else {
-          try {
-            saveAs(blob, filename);
-          } catch (saveErr) {
-            console.warn("saveAs(JPG) failed, deferred panel", saveErr);
-            setPendingFromBlob(blob, filename, "jpg");
-          }
-        }
-      } catch (saveErr) {
-        console.warn("blob from data URL failed, data URL link fallback", saveErr);
-        setJpgReady({ dataUrl, filename });
-      }
+      const blob = await (await fetch(dataUrl)).blob();
+      saveAs(blob, filename);
     } catch (e) {
       console.error("JPG export failed", e);
       const msg = e instanceof Error ? e.message : String(e);
       setLastExportError(msg);
-      alert(
-        `Не получилось скачать JPG.\n\nПричина: ${msg}\n\nПопробуй «Скачать PDF» или «Печать / PDF» → «Сохранить как PDF».`
-      );
+      alert(`Не получилось скачать JPG.\n\n${msg}`);
     } finally {
       setExporting(false);
     }
@@ -722,24 +588,24 @@ export default function App() {
                 Печать на iPhone / iPad
               </h2>
               <p className="text-sm text-gray-600 mb-3">
-                В Safari диалог системной печати часто недоступен. Надёжный способ:
+                В Safari диалог печати часто недоступен. Можно сохранить смету как картинку и распечатать её:
               </p>
               <ol className="list-decimal pl-5 text-sm text-gray-700 space-y-1 mb-5">
-                <li>Нажмите «Скачать PDF» ниже или в панели.</li>
-                <li>Откройте сохранённый файл.</li>
+                <li>Нажмите «Скачать JPG» ниже.</li>
+                <li>Откройте файл в «Фото» / «Файлы».</li>
                 <li>
-                  Меню «Поделиться» <span aria-hidden="true">↑</span> → «Печать» или «Сохранить в Файлы».
+                  «Поделиться» <span aria-hidden="true">↑</span> → «Печать».
                 </li>
               </ol>
               <button
                 type="button"
-                className="w-full py-3 rounded-xl font-semibold text-white bg-violet-600 hover:bg-violet-700 transition mb-2"
+                className="w-full py-3 rounded-xl font-semibold text-white bg-blue-600 hover:bg-blue-700 transition mb-2"
                 onClick={() => {
                   setIosPrintHelpOpen(false);
-                  void downloadPdf();
+                  void downloadJpg();
                 }}
               >
-                Скачать PDF
+                Скачать JPG
               </button>
               <button
                 type="button"
@@ -764,6 +630,14 @@ export default function App() {
 
         <div className="no-print sticky top-0 z-50 bg-white border-b border-gray-200 px-4 py-3">
           <div className="max-w-[1200px] mx-auto space-y-3">
+            {isEmbeddedInAppBrowser() && (
+              <div className="rounded-lg border border-amber-400 bg-amber-50 px-3 py-2 text-sm text-amber-950 leading-snug">
+                <span className="font-semibold">Открыто из мессенджера (Telegram и др.)</span> — встроенный
+                браузер часто блокирует скачивание и печать. Открой эту страницу в{' '}
+                <strong>Safari</strong> или <strong>Chrome</strong> (меню «⋯» → «Открыть в браузере» / «В
+                Chrome»).
+              </div>
+            )}
             <div className="flex flex-wrap items-center gap-2 sm:gap-3">
               <button
                 onClick={handlePreviewPrint}
@@ -773,14 +647,6 @@ export default function App() {
                 Печать / PDF
               </button>
               <button
-                onClick={() => void downloadPdf()}
-                className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg font-semibold transition active:scale-95 ${exporting ? "bg-violet-400 text-white cursor-not-allowed" : "bg-violet-600 text-white hover:bg-violet-700"}`}
-                type="button"
-                disabled={exporting}
-              >
-                {exporting ? "Подождите..." : "Скачать PDF"}
-              </button>
-              <button
                 onClick={() => void downloadJpg()}
                 className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg font-semibold transition active:scale-95 ${exporting ? "bg-blue-400 text-white cursor-not-allowed" : "bg-blue-600 text-white hover:bg-blue-700"}`}
                 type="button"
@@ -788,17 +654,6 @@ export default function App() {
               >
                 {exporting ? "Подождите..." : "Скачать JPG"}
               </button>
-              {jpgReady && (
-                <a
-                  href={jpgReady.dataUrl}
-                  download={jpgReady.filename}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-sm font-semibold text-blue-700 underline underline-offset-2"
-                >
-                  Скачать файл (JPG)
-                </a>
-              )}
               <button
                 onClick={() => window.close()}
                 className="inline-flex items-center gap-2 bg-gray-100 text-gray-700 px-4 py-2 rounded-lg font-semibold hover:bg-gray-200 transition active:scale-95"
@@ -806,82 +661,11 @@ export default function App() {
               >
                 Закрыть
               </button>
-              <span className="text-xs text-gray-500 ml-auto max-w-[280px] text-right leading-snug max-sm:ml-0 max-sm:basis-full max-sm:text-left">
-                {isMobileLikeUi() ? (
-                  <>
-                    1) «Скачать PDF» → 2) во вкладке ниже нажмите «Сохранить в загрузки» или «Поделиться». Так
-                    браузер не блокирует файл. Печать: «Поделиться» → «Печать».
-                  </>
-                ) : (
-                  <>PDF: «Скачать PDF» или «Печать / PDF» → «Сохранить как PDF». На телефоне после подготовки
-                    появится жёлтая панель — нужен второй тап.</>
-                )}
+              <span className="text-xs text-gray-500 ml-auto max-w-[260px] text-right leading-snug max-sm:ml-0 max-sm:basis-full max-sm:text-left">
+                «Печать / PDF» — системный диалог. «Скачать JPG» — сразу в загрузки. Из Telegram откройте страницу
+                в браузере.
               </span>
             </div>
-
-            {pendingBlobFile && (
-              <div
-                id="pending-save-panel"
-                className="rounded-xl border-2 border-amber-400 bg-amber-50 px-4 py-3 text-sm text-amber-950 shadow-sm"
-              >
-                <p className="font-semibold mb-2">
-                  Файл готов ({pendingBlobFile.kind === "pdf" ? "PDF" : "JPG"}). Нажмите кнопку — на телефоне без
-                  второго нажатия загрузка часто блокируется:
-                </p>
-                <div className="flex flex-wrap gap-2 items-center">
-                  <button
-                    type="button"
-                    className="inline-flex items-center px-4 py-2 rounded-lg font-semibold bg-amber-600 text-white hover:bg-amber-700 active:scale-[0.98]"
-                    onClick={() => {
-                      saveAs(pendingBlobFile.blob, pendingBlobFile.filename);
-                    }}
-                  >
-                    Сохранить в загрузки
-                  </button>
-                  {typeof navigator !== "undefined" && typeof navigator.share === "function" && (
-                    <button
-                      type="button"
-                      className="inline-flex items-center px-4 py-2 rounded-lg font-semibold bg-white border border-amber-300 text-amber-950 hover:bg-amber-100 active:scale-[0.98]"
-                      onClick={() => {
-                        const mime =
-                          pendingBlobFile.kind === "pdf" ? "application/pdf" : "image/jpeg";
-                        const file = new File([pendingBlobFile.blob], pendingBlobFile.filename, {
-                          type: mime,
-                        });
-                        const share = navigator.share;
-                        const canShare = navigator.canShare?.({ files: [file] });
-                        if (!share || !canShare) {
-                          alert("«Поделиться файлом» недоступен в этом браузере. Используйте «Сохранить в загрузки».");
-                          return;
-                        }
-                        void share({ files: [file], title: "Смета", text: "Смета на работы" }).catch((err: unknown) => {
-                          const name = err instanceof Error ? err.name : "";
-                          if (name !== "AbortError") console.warn("share failed", err);
-                        });
-                      }}
-                    >
-                      Поделиться…
-                    </button>
-                  )}
-                  <a
-                    href={pendingBlobFile.objectUrl}
-                    download={pendingBlobFile.filename}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center px-4 py-2 rounded-lg font-semibold text-amber-900 underline underline-offset-2 hover:text-amber-950"
-                  >
-                    Открыть ссылку на файл
-                  </a>
-                  <button
-                    type="button"
-                    className="text-xs text-amber-800/80 hover:underline ml-auto sm:ml-0"
-                    onClick={() => clearPendingFile()}
-                  >
-                    Скрыть панель
-                  </button>
-                </div>
-              </div>
-            )}
           </div>
         </div>
 
