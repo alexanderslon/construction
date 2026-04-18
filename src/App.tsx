@@ -170,7 +170,6 @@ export default function App() {
   const draggingRowIdRef = useRef<number | null>(null);
   const printContentRef = useRef<HTMLDivElement | null>(null);
   const [exporting, setExporting] = useState(false);
-  const [stampSrc, setStampSrc] = useState<string>("/stamp.png");
   const [lastExportError, setLastExportError] = useState<string>("");
 
   useEffect(() => {
@@ -189,31 +188,6 @@ export default function App() {
       // ignore malformed storage
     }
   }, [isPreview, previewKey]);
-
-  useEffect(() => {
-    if (!isPreview) return;
-    // Inline stamp to avoid canvas tainting in JPG export
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch("/stamp.png", { cache: "no-store" });
-        if (!res.ok) return;
-        const blob = await res.blob();
-        const reader = new FileReader();
-        const dataUrl: string = await new Promise((resolve, reject) => {
-          reader.onerror = () => reject(new Error("stamp read error"));
-          reader.onload = () => resolve(String(reader.result));
-          reader.readAsDataURL(blob);
-        });
-        if (!cancelled) setStampSrc(dataUrl);
-      } catch {
-        // keep default /stamp.png
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [isPreview]);
 
   const updateRow = useCallback((id: number, field: keyof RowData, value: string | number) => {
     const numericFields: ReadonlySet<keyof RowData> = new Set(["quantity", "workerPrice", "upperPrice"]);
@@ -282,13 +256,7 @@ export default function App() {
   }, [rows, prepayment, laborer, otkat]);
 
   const renderPrintDocument = () => (
-    <div className="relative">
-      <img
-        src={stampSrc}
-        alt=""
-        className="pointer-events-none select-none absolute -bottom-2 -right-2 w-[220px] opacity-20 rotate-[-12deg]"
-        loading="eager"
-      />
+    <>
       <div className="print-header mb-6">
         <div className="flex justify-between items-start mb-4">
           <div>
@@ -331,7 +299,7 @@ export default function App() {
           </div>
         </div>
       </div>
-    </div>
+    </>
   );
 
   const openPreview = () => {
