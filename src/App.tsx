@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { toJpeg } from "html-to-image";
+import { jsPDF } from "jspdf";
 
 interface RowData {
   id: number;
@@ -68,6 +69,44 @@ function makePreviewKey(): string {
 
 function safeFilename(s: string): string {
   return s.replace(/[^\w\-]+/g, "_").replace(/_+/g, "_").replace(/^_+|_+$/g, "");
+}
+
+/** Landscape A4 PDF from a full-page JPEG data URL (multi-page if content is tall). */
+function exportJpegDataUrlToPdf(dataUrl: string, filename: string) {
+  const pdf = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+  const pageWidth = pdf.internal.pageSize.getWidth();
+  const pageHeight = pdf.internal.pageSize.getHeight();
+  const props = pdf.getImageProperties(dataUrl);
+  const imgWidth = pageWidth;
+  const imgHeight = (props.height * imgWidth) / props.width;
+  let heightLeft = imgHeight;
+  let position = 0;
+
+  pdf.addImage(dataUrl, "JPEG", 0, position, imgWidth, imgHeight);
+  heightLeft -= pageHeight;
+
+  while (heightLeft > 0) {
+    position = heightLeft - imgHeight;
+    pdf.addPage();
+    pdf.addImage(dataUrl, "JPEG", 0, position, imgWidth, imgHeight);
+    heightLeft -= pageHeight;
+  }
+
+  pdf.save(filename);
+}
+
+function touchLikeExportPixelRatio(): number {
+  if (typeof window === "undefined") return 2;
+  const prefersCoarse = window.matchMedia("(pointer: coarse)").matches;
+  const narrow = window.matchMedia("(max-width: 768px)").matches;
+  return prefersCoarse || narrow ? 1.75 : 2;
+}
+
+function isMobileLikeUi(): boolean {
+  if (typeof window === "undefined") return false;
+  return (
+    window.matchMedia("(pointer: coarse)").matches || window.matchMedia("(max-width: 768px)").matches
+  );
 }
 
 function toNumber(v: unknown): number {
@@ -317,6 +356,55 @@ export default function App() {
     if (!w) window.location.assign(next);
   };
 
+  const handlePreviewPrint = useCallback(() => {
+    const restore = () => {
+      document.querySelectorAll<HTMLElement>(".no-print").forEach((node) => {
+        node.style.removeProperty("display");
+      });
+    };
+    document.querySelectorAll<HTMLElement>(".no-print").forEach((node) => {
+      node.style.setProperty("display", "none", "important");
+    });
+    window.setTimeout(() => {
+      window.print();
+      window.setTimeout(restore, 500);
+    }, 100);
+  }, []);
+
+  const downloadPdf = async () => {
+    const el = printContentRef.current;
+    if (!el) return;
+
+    const baseName = safeFilename(`smeta-${header.documentNumber || "doc"}-${header.date || ""}`) || "smeta";
+    try {
+      setExporting(true);
+      setLastExportError("");
+      setJpgReady(null);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const fonts = (document as any).fonts;
+      if (fonts?.ready) await fonts.ready;
+
+      const dataUrl = await toJpeg(el, {
+        quality: 0.92,
+        backgroundColor: "#ffffff",
+        pixelRatio: touchLikeExportPixelRatio(),
+        cacheBust: true,
+      });
+      if (!dataUrl) throw new Error("Не удалось сформировать изображение");
+
+      exportJpegDataUrlToPdf(dataUrl, `${baseName}.pdf`);
+    } catch (e) {
+      console.error("PDF export failed", e);
+      const msg = e instanceof Error ? e.message : String(e);
+      setLastExportError(msg);
+      alert(
+        `Не получилось скачать PDF.\n\nПричина: ${msg}\n\nПопробуй «Печать / PDF» → «Сохранить как PDF» или поделиться страницей.`
+      );
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const downloadJpg = async () => {
     const el = printContentRef.current;
     if (!el) return;
@@ -331,16 +419,12 @@ export default function App() {
       const fonts = (document as any).fonts;
       if (fonts?.ready) await fonts.ready;
 
-      const prefersCoarse =
-        typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches;
-      const narrow =
-        typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches;
-      const isTouchLike = prefersCoarse || narrow;
+      const isTouchLike = isMobileLikeUi();
 
       const dataUrl = await toJpeg(el, {
         quality: 0.92,
         backgroundColor: "#ffffff",
-        pixelRatio: isTouchLike ? 1.75 : 2,
+        pixelRatio: touchLikeExportPixelRatio(),
         cacheBust: true,
       });
       if (!dataUrl) throw new Error("Не удалось сформировать изображение");
@@ -362,7 +446,9 @@ export default function App() {
       console.error("JPG export failed", e);
       const msg = e instanceof Error ? e.message : String(e);
       setLastExportError(msg);
-      alert(`Не получилось скачать JPG.\n\nПричина: ${msg}\n\nПопробуй ещё раз или сделай «Печать / PDF» → «Сохранить как PDF».`);
+      alert(
+        `Не получилось скачать JPG.\n\nПричина: ${msg}\n\nПопробуй «Скачать PDF» или «Печать / PDF» → «Сохранить как PDF».`
+      );
     } finally {
       setExporting(false);
     }
@@ -542,14 +628,22 @@ export default function App() {
   if (isPreview) {
     return (
       <div className="min-h-screen bg-slate-100">
-        <div className="sticky top-0 z-50 bg-white border-b border-gray-200 px-4 py-3">
+        <div className="no-print sticky top-0 z-50 bg-white border-b border-gray-200 px-4 py-3">
           <div className="flex flex-wrap items-center gap-2 sm:gap-3 max-w-[1200px] mx-auto">
             <button
-              onClick={() => window.print()}
+              onClick={handlePreviewPrint}
               className="inline-flex items-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-emerald-700 transition active:scale-95"
               type="button"
             >
               Печать / PDF
+            </button>
+            <button
+              onClick={() => void downloadPdf()}
+              className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg font-semibold transition active:scale-95 ${exporting ? "bg-violet-400 text-white cursor-not-allowed" : "bg-violet-600 text-white hover:bg-violet-700"}`}
+              type="button"
+              disabled={exporting}
+            >
+              {exporting ? "Подождите..." : "Скачать PDF"}
             </button>
             <button
               onClick={() => void downloadJpg()}
@@ -557,7 +651,7 @@ export default function App() {
               type="button"
               disabled={exporting}
             >
-              {exporting ? "Готовим JPG..." : "Скачать JPG"}
+              {exporting ? "Подождите..." : "Скачать JPG"}
             </button>
             {jpgReady && (
               <a
@@ -567,7 +661,7 @@ export default function App() {
                 rel="noopener noreferrer"
                 className="text-sm font-semibold text-blue-700 underline underline-offset-2"
               >
-                Скачать файл
+                Скачать файл (JPG)
               </a>
             )}
             <button
@@ -577,8 +671,15 @@ export default function App() {
             >
               Закрыть
             </button>
-            <span className="text-xs text-gray-500 ml-auto max-w-[220px] text-right leading-snug max-sm:ml-0 max-sm:basis-full max-sm:text-left">
-              PDF: Печать → «Сохранить как PDF». На телефоне после «Скачать JPG» нажми «Скачать файл».
+            <span className="text-xs text-gray-500 ml-auto max-w-[280px] text-right leading-snug max-sm:ml-0 max-sm:basis-full max-sm:text-left">
+              {isMobileLikeUi() ? (
+                <>
+                  На телефоне удобнее «Скачать PDF». Печать: меню «Поделиться» → «Печать» или «Сохранить как PDF».
+                  После «Скачать JPG» может понадобиться ссылка «Скачать файл (JPG)».
+                </>
+              ) : (
+                <>PDF-файл: кнопка «Скачать PDF» или «Печать / PDF» → в диалоге «Сохранить как PDF».</>
+              )}
             </span>
           </div>
         </div>
@@ -586,7 +687,7 @@ export default function App() {
         {lastExportError && (
           <div className="max-w-[1200px] mx-auto px-4 pt-3">
             <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-              <div className="font-bold">Ошибка экспорта JPG</div>
+              <div className="font-bold">Ошибка экспорта</div>
               <div className="mt-1 break-words">{lastExportError}</div>
             </div>
           </div>
