@@ -170,6 +170,8 @@ export default function App() {
   const draggingRowIdRef = useRef<number | null>(null);
   const printContentRef = useRef<HTMLDivElement | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [stampSrc, setStampSrc] = useState<string>("/stamp.png");
+  const [lastExportError, setLastExportError] = useState<string>("");
 
   useEffect(() => {
     if (!isPreview) return;
@@ -187,6 +189,31 @@ export default function App() {
       // ignore malformed storage
     }
   }, [isPreview, previewKey]);
+
+  useEffect(() => {
+    if (!isPreview) return;
+    // Inline stamp to avoid canvas tainting in JPG export
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/stamp.png", { cache: "no-store" });
+        if (!res.ok) return;
+        const blob = await res.blob();
+        const reader = new FileReader();
+        const dataUrl: string = await new Promise((resolve, reject) => {
+          reader.onerror = () => reject(new Error("stamp read error"));
+          reader.onload = () => resolve(String(reader.result));
+          reader.readAsDataURL(blob);
+        });
+        if (!cancelled) setStampSrc(dataUrl);
+      } catch {
+        // keep default /stamp.png
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isPreview]);
 
   const updateRow = useCallback((id: number, field: keyof RowData, value: string | number) => {
     const numericFields: ReadonlySet<keyof RowData> = new Set(["quantity", "workerPrice", "upperPrice"]);
@@ -257,11 +284,10 @@ export default function App() {
   const renderPrintDocument = () => (
     <div className="relative">
       <img
-        src="/stamp.png"
+        src={stampSrc}
         alt=""
         className="pointer-events-none select-none absolute -bottom-2 -right-2 w-[220px] opacity-20 rotate-[-12deg]"
         loading="eager"
-        crossOrigin="anonymous"
       />
       <div className="print-header mb-6">
         <div className="flex justify-between items-start mb-4">
@@ -326,6 +352,7 @@ export default function App() {
     const baseName = safeFilename(`smeta-${header.documentNumber || "doc"}-${header.date || ""}`) || "smeta";
     try {
       setExporting(true);
+      setLastExportError("");
       // Wait for fonts/images to reduce blank exports
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const fonts = (document as any).fonts;
@@ -372,7 +399,9 @@ export default function App() {
       setTimeout(() => URL.revokeObjectURL(url), 30_000);
     } catch (e) {
       console.error("JPG export failed", e);
-      alert("Не получилось скачать JPG. Попробуй ещё раз или сделай «Печать / PDF» → «Сохранить как PDF».");
+      const msg = e instanceof Error ? e.message : String(e);
+      setLastExportError(msg);
+      alert(`Не получилось скачать JPG.\n\nПричина: ${msg}\n\nПопробуй ещё раз или сделай «Печать / PDF» → «Сохранить как PDF».`);
     } finally {
       setExporting(false);
     }
@@ -579,6 +608,15 @@ export default function App() {
             Для PDF: «Печать / PDF» → «Сохранить как PDF»
           </div>
         </div>
+
+        {lastExportError && (
+          <div className="max-w-[1200px] mx-auto px-4 pt-3">
+            <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+              <div className="font-bold">Ошибка экспорта JPG</div>
+              <div className="mt-1 break-words">{lastExportError}</div>
+            </div>
+          </div>
+        )}
 
         <div className="max-w-[1200px] mx-auto p-4">
           <div ref={printContentRef} className="bg-white rounded-2xl shadow-md border border-gray-100 p-4">
